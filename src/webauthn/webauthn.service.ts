@@ -237,6 +237,115 @@ export class WebAuthnService {
     return { verified: false };
   }
 
+  async generateUsernamelessAuthenticationOptions(): Promise<PublicKeyCredentialRequestOptionsJSON> {
+    const opts: GenerateAuthenticationOptionsOpts = {
+      rpID: this.rpID,
+      // Empty allowCredentials enables usernameless/discoverable credential authentication
+      allowCredentials: [],
+      userVerification: 'required',
+    };
+
+    const options = await generateAuthenticationOptions(opts);
+
+    // Store challenge with a special key for usernameless auth
+    await this.storageService.saveChallenge('usernameless', options.challenge);
+
+    console.log('Generated usernameless authentication options');
+    console.log('Challenge stored for usernameless authentication');
+
+    return options;
+  }
+
+  async verifyUsernamelessAuthentication(
+    response: AuthenticationResponseJSON,
+  ): Promise<{ verified: boolean; user?: User }> {
+    console.log('Starting usernameless authentication verification');
+    console.log('Credential ID from response:', response.id);
+
+    try {
+      // Get the stored challenge for usernameless auth
+      const expectedChallenge =
+        await this.storageService.getChallenge('usernameless');
+
+      if (!expectedChallenge) {
+        throw new Error('No challenge found for usernameless authentication');
+      }
+
+      // Load all users and find the one with matching credential
+      const data = await this.storageService.loadData();
+      let matchingUser: User | undefined;
+      let matchingAuthenticator: Authenticator | undefined;
+
+      // Search through all users to find the matching credential
+      for (const user of Object.values(data.users)) {
+        const authenticator = user.authenticators.find(
+          (auth) => auth.credentialID === response.id,
+        );
+        if (authenticator) {
+          matchingUser = user;
+          matchingAuthenticator = authenticator;
+          break;
+        }
+      }
+
+      if (!matchingUser || !matchingAuthenticator) {
+        console.log(
+          'No matching user/authenticator found for credential:',
+          response.id,
+        );
+        console.log('Available credentials across all users:');
+        for (const [userId, user] of Object.entries(data.users)) {
+          console.log(
+            `User ${userId}:`,
+            user.authenticators.map((auth) => auth.credentialID),
+          );
+        }
+        return { verified: false };
+      }
+
+      console.log('Found matching user:', matchingUser.id);
+
+      // Verify the authentication response
+      const opts: VerifyAuthenticationResponseOpts = {
+        response,
+        expectedChallenge,
+        expectedOrigin: this.origin,
+        expectedRPID: this.rpID,
+        credential: {
+          id: matchingAuthenticator.credentialID,
+          publicKey: matchingAuthenticator.credentialPublicKey,
+          counter: matchingAuthenticator.counter,
+          transports: matchingAuthenticator.transports,
+        },
+        requireUserVerification: true,
+      };
+
+      const verification = await verifyAuthenticationResponse(opts);
+
+      if (verification.verified) {
+        // Update counter
+        matchingAuthenticator.counter =
+          verification.authenticationInfo.newCounter;
+        await this.storageService.saveUser(matchingUser);
+
+        // Clean up the usernameless challenge
+        await this.storageService.deleteChallenge('usernameless');
+
+        console.log(
+          'Usernameless authentication successful for user:',
+          matchingUser.id,
+        );
+        return { verified: true, user: matchingUser };
+      }
+
+      console.log('Usernameless authentication verification failed');
+      return { verified: false };
+    } catch (error) {
+      console.error('Usernameless authentication error:', error);
+      return { verified: false };
+    }
+  }
+
   // Helper method to get user by ID
   async getUser(userId: string): Promise<User | undefined> {
     return this.storageService.getUserById(userId);
