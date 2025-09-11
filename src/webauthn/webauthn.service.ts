@@ -18,6 +18,7 @@ import type {
   PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/server';
 import { User, Authenticator } from './interfaces/user.interface';
+import { JsonStorageService } from './services/json-storage.service';
 
 @Injectable()
 export class WebAuthnService {
@@ -25,11 +26,10 @@ export class WebAuthnService {
   private readonly rpName: string;
   private readonly origin: string;
 
-  // In-memory storage for demo - replace with your database
-  private users: Map<string, User> = new Map();
-  private challenges: Map<string, string> = new Map();
-
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private storageService: JsonStorageService,
+  ) {
     this.rpID = this.configService.get('WEBAUTHN_RP_ID') || 'localhost';
     this.rpName = this.configService.get('WEBAUTHN_RP_NAME') || 'WebAuthn Demo';
     this.origin =
@@ -46,7 +46,9 @@ export class WebAuthnService {
     userId: string,
     username: string,
   ): Promise<PublicKeyCredentialCreationOptionsJSON> {
-    const user = this.users.get(userId) || {
+    const existingUser = await this.storageService.getUserById(userId);
+
+    const user = existingUser || {
       id: userId,
       username,
       email: `${username}@example.com`,
@@ -73,11 +75,11 @@ export class WebAuthnService {
     const options = await generateRegistrationOptions(opts);
 
     // Store challenge for verification
-    this.challenges.set(userId, options.challenge);
+    await this.storageService.saveChallenge(userId, options.challenge);
 
     // Store user if new
-    if (!this.users.has(userId)) {
-      this.users.set(userId, user);
+    if (!existingUser) {
+      await this.storageService.saveUser(user);
     }
 
     console.log('Generated registration options for user:', userId);
@@ -90,8 +92,8 @@ export class WebAuthnService {
     userId: string,
     response: RegistrationResponseJSON,
   ): Promise<{ verified: boolean; user?: User }> {
-    const expectedChallenge = this.challenges.get(userId);
-    const user = this.users.get(userId);
+    const expectedChallenge = await this.storageService.getChallenge(userId);
+    const user = await this.storageService.getUserById(userId);
 
     console.log('Verifying registration for user:', userId);
     console.log('Expected challenge:', expectedChallenge);
@@ -133,10 +135,10 @@ export class WebAuthnService {
       };
 
       user.authenticators.push(newAuthenticator);
-      this.users.set(userId, user);
+      await this.storageService.saveUser(user);
 
       // Clean up challenge
-      this.challenges.delete(userId);
+      await this.storageService.deleteChallenge(userId);
 
       console.log('Registration successful for user:', userId);
       console.log('Authenticator count:', user.authenticators.length);
@@ -151,7 +153,7 @@ export class WebAuthnService {
   async generateAuthenticationOptions(
     userId: string,
   ): Promise<PublicKeyCredentialRequestOptionsJSON> {
-    const user = this.users.get(userId);
+    const user = await this.storageService.getUserById(userId);
 
     if (!user) {
       throw new Error('User not found');
@@ -166,7 +168,7 @@ export class WebAuthnService {
     };
 
     const options = await generateAuthenticationOptions(opts);
-    this.challenges.set(userId, options.challenge);
+    await this.storageService.saveChallenge(userId, options.challenge);
 
     console.log('Generated authentication options for cross-device support');
     console.log('Allowing any credential for RP:', this.rpID);
@@ -178,8 +180,8 @@ export class WebAuthnService {
     userId: string,
     response: AuthenticationResponseJSON,
   ): Promise<{ verified: boolean; user?: User }> {
-    const expectedChallenge = this.challenges.get(userId);
-    const user = this.users.get(userId);
+    const expectedChallenge = await this.storageService.getChallenge(userId);
+    const user = await this.storageService.getUserById(userId);
 
     console.log('Verifying authentication for user:', userId);
     console.log('Response credential ID:', response.id);
@@ -214,8 +216,8 @@ export class WebAuthnService {
         if (verification.verified) {
           existingAuthenticator.counter =
             verification.authenticationInfo.newCounter;
-          this.users.set(userId, user);
-          this.challenges.delete(userId);
+          await this.storageService.saveUser(user);
+          await this.storageService.deleteChallenge(userId);
           console.log('Authentication successful');
           return { verified: true, user };
         }
@@ -235,28 +237,133 @@ export class WebAuthnService {
     return { verified: false };
   }
 
+  async generateUsernamelessAuthenticationOptions(): Promise<PublicKeyCredentialRequestOptionsJSON> {
+    const opts: GenerateAuthenticationOptionsOpts = {
+      rpID: this.rpID,
+      // Empty allowCredentials enables usernameless/discoverable credential authentication
+      allowCredentials: [],
+      userVerification: 'required',
+    };
+
+    const options = await generateAuthenticationOptions(opts);
+
+    // Store challenge with a special key for usernameless auth
+    await this.storageService.saveChallenge('usernameless', options.challenge);
+
+    console.log('Generated usernameless authentication options');
+    console.log('Challenge stored for usernameless authentication');
+
+    return options;
+  }
+
+  async verifyUsernamelessAuthentication(
+    response: AuthenticationResponseJSON,
+  ): Promise<{ verified: boolean; user?: User }> {
+    console.log('Starting usernameless authentication verification');
+    console.log('Credential ID from response:', response.id);
+
+    try {
+      // Get the stored challenge for usernameless auth
+      const expectedChallenge =
+        await this.storageService.getChallenge('usernameless');
+
+      if (!expectedChallenge) {
+        throw new Error('No challenge found for usernameless authentication');
+      }
+
+      // Load all users and find the one with matching credential
+      const data = await this.storageService.loadData();
+      let matchingUser: User | undefined;
+      let matchingAuthenticator: Authenticator | undefined;
+
+      // Search through all users to find the matching credential
+      for (const user of Object.values(data.users)) {
+        const authenticator = user.authenticators.find(
+          (auth) => auth.credentialID === response.id,
+        );
+        if (authenticator) {
+          matchingUser = user;
+          matchingAuthenticator = authenticator;
+          break;
+        }
+      }
+
+      if (!matchingUser || !matchingAuthenticator) {
+        console.log(
+          'No matching user/authenticator found for credential:',
+          response.id,
+        );
+        console.log('Available credentials across all users:');
+        for (const [userId, user] of Object.entries(data.users)) {
+          console.log(
+            `User ${userId}:`,
+            user.authenticators.map((auth) => auth.credentialID),
+          );
+        }
+        return { verified: false };
+      }
+
+      console.log('Found matching user:', matchingUser.id);
+
+      // Verify the authentication response
+      const opts: VerifyAuthenticationResponseOpts = {
+        response,
+        expectedChallenge,
+        expectedOrigin: this.origin,
+        expectedRPID: this.rpID,
+        credential: {
+          id: matchingAuthenticator.credentialID,
+          publicKey: matchingAuthenticator.credentialPublicKey,
+          counter: matchingAuthenticator.counter,
+          transports: matchingAuthenticator.transports,
+        },
+        requireUserVerification: true,
+      };
+
+      const verification = await verifyAuthenticationResponse(opts);
+
+      if (verification.verified) {
+        // Update counter
+        matchingAuthenticator.counter =
+          verification.authenticationInfo.newCounter;
+        await this.storageService.saveUser(matchingUser);
+
+        // Clean up the usernameless challenge
+        await this.storageService.deleteChallenge('usernameless');
+
+        console.log(
+          'Usernameless authentication successful for user:',
+          matchingUser.id,
+        );
+        return { verified: true, user: matchingUser };
+      }
+
+      console.log('Usernameless authentication verification failed');
+      return { verified: false };
+    } catch (error) {
+      console.error('Usernameless authentication error:', error);
+      return { verified: false };
+    }
+  }
+
   // Helper method to get user by ID
-  getUser(userId: string): User | undefined {
-    return this.users.get(userId);
+  async getUser(userId: string): Promise<User | undefined> {
+    return this.storageService.getUserById(userId);
   }
 
   // Helper method to check if user exists
-  userExists(userId: string): boolean {
-    return this.users.has(userId);
+  async userExists(userId: string): Promise<boolean> {
+    const user = await this.storageService.getUserById(userId);
+    return !!user;
   }
 
   // Debug methods - remove in production
-  getAllUsers(): Map<string, User> {
-    return this.users;
+  async getStorageStats() {
+    return this.storageService.getStorageStats();
   }
 
-  getAllChallenges(): Map<string, string> {
-    return this.challenges;
-  }
-
-  clearAllData(): void {
-    this.users.clear();
-    this.challenges.clear();
+  async clearAllData(): Promise<void> {
+    await this.storageService.clearAll();
     console.log('All user data and challenges cleared');
   }
 }

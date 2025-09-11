@@ -32,6 +32,10 @@ export class AuthenticateCompleteDto {
   response: AuthenticationResponseJSON;
 }
 
+export class AuthenticateUsernamelessCompleteDto {
+  response: AuthenticationResponseJSON;
+}
+
 export interface ApiResponse<T = any> {
   success: boolean;
   message?: string;
@@ -149,7 +153,7 @@ export class WebAuthnController {
       }
 
       // Check if user exists
-      if (!this.webAuthnService.userExists(userId)) {
+      if (!(await this.webAuthnService.userExists(userId))) {
         throw new HttpException('User not found', HttpStatus.NOT_FOUND);
       }
 
@@ -228,15 +232,15 @@ export class WebAuthnController {
   }
 
   @Get('user')
-  getUser(
+  async getUser(
     @Query('userId') userId: string,
-  ): ApiResponse<{ user: UserResponse }> {
+  ): Promise<ApiResponse<{ user: UserResponse }>> {
     try {
       if (!userId) {
         throw new HttpException('userId is required', HttpStatus.BAD_REQUEST);
       }
 
-      const user = this.webAuthnService.getUser(userId);
+      const user = await this.webAuthnService.getUser(userId);
 
       if (!user) {
         throw new HttpException('User not found', HttpStatus.NOT_FOUND);
@@ -273,5 +277,110 @@ export class WebAuthnController {
       origin: process.env.WEBAUTHN_ORIGIN,
       rpId: process.env.WEBAUTHN_RP_ID,
     };
+  }
+
+  // Debug endpoint - remove in production
+  @Get('storage/stats')
+  async getStorageStats() {
+    try {
+      const stats = await this.webAuthnService.getStorageStats();
+      return {
+        success: true,
+        data: stats,
+      };
+    } catch (error) {
+      console.error('Get storage stats error:', error);
+      throw new HttpException(
+        'Failed to get storage stats',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  // Debug endpoint - remove in production
+  @Post('storage/clear')
+  async clearStorage(): Promise<ApiResponse> {
+    try {
+      await this.webAuthnService.clearAllData();
+      return {
+        success: true,
+        message: 'Storage cleared successfully',
+      };
+    } catch (error) {
+      console.error('Clear storage error:', error);
+      throw new HttpException(
+        'Failed to clear storage',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Post('authenticate/usernameless/begin')
+  async beginUsernamelessAuthentication(): Promise<ApiResponse> {
+    try {
+      const options =
+        await this.webAuthnService.generateUsernamelessAuthenticationOptions();
+
+      return {
+        success: true,
+        data: { options },
+      };
+    } catch (error) {
+      console.error('Begin usernameless authentication error:', error);
+      throw new HttpException(
+        error instanceof Error
+          ? error.message
+          : 'Failed to generate usernameless authentication options',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Post('authenticate/usernameless/complete')
+  async completeUsernamelessAuthentication(
+    @Body() body: AuthenticateUsernamelessCompleteDto,
+  ): Promise<ApiResponse<{ user: UserResponse }>> {
+    try {
+      const { response } = body;
+
+      if (!response) {
+        throw new HttpException('response is required', HttpStatus.BAD_REQUEST);
+      }
+
+      const result =
+        await this.webAuthnService.verifyUsernamelessAuthentication(response);
+
+      if (result.verified && result.user) {
+        const userResponse: UserResponse = {
+          id: result.user.id,
+          username: result.user.username,
+          email: result.user.email,
+          hasAuthenticators: (result.user.authenticators?.length || 0) > 0,
+          authenticatorCount: result.user.authenticators?.length || 0,
+        };
+
+        return {
+          success: true,
+          message: 'Usernameless authentication successful',
+          data: { user: userResponse },
+        };
+      } else {
+        throw new HttpException(
+          'Usernameless authentication verification failed',
+          HttpStatus.UNAUTHORIZED,
+        );
+      }
+    } catch (error) {
+      console.error('Complete usernameless authentication error:', error);
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        error instanceof Error
+          ? error.message
+          : 'Usernameless authentication verification failed',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 }
