@@ -6,7 +6,7 @@ async function bootstrap() {
 
   // Enable CORS for development
   app.enableCors({
-    origin: ['http://localhost:3001'], // specifically allow 3001
+    origin: ['http://localhost:3001', 'https://genji-app.netlify.app'],
     credentials: true,
   });
 

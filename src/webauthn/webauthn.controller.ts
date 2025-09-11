@@ -149,7 +149,7 @@ export class WebAuthnController {
       }
 
       // Check if user exists
-      if (!this.webAuthnService.userExists(userId)) {
+      if (!(await this.webAuthnService.userExists(userId))) {
         throw new HttpException('User not found', HttpStatus.NOT_FOUND);
       }
 
@@ -228,15 +228,15 @@ export class WebAuthnController {
   }
 
   @Get('user')
-  getUser(
+  async getUser(
     @Query('userId') userId: string,
-  ): ApiResponse<{ user: UserResponse }> {
+  ): Promise<ApiResponse<{ user: UserResponse }>> {
     try {
       if (!userId) {
         throw new HttpException('userId is required', HttpStatus.BAD_REQUEST);
       }
 
-      const user = this.webAuthnService.getUser(userId);
+      const user = await this.webAuthnService.getUser(userId);
 
       if (!user) {
         throw new HttpException('User not found', HttpStatus.NOT_FOUND);
@@ -273,5 +273,41 @@ export class WebAuthnController {
       origin: process.env.WEBAUTHN_ORIGIN,
       rpId: process.env.WEBAUTHN_RP_ID,
     };
+  }
+
+  // Debug endpoint - remove in production
+  @Get('storage/stats')
+  async getStorageStats() {
+    try {
+      const stats = await this.webAuthnService.getStorageStats();
+      return {
+        success: true,
+        data: stats,
+      };
+    } catch (error) {
+      console.error('Get storage stats error:', error);
+      throw new HttpException(
+        'Failed to get storage stats',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  // Debug endpoint - remove in production
+  @Post('storage/clear')
+  async clearStorage(): Promise<ApiResponse> {
+    try {
+      await this.webAuthnService.clearAllData();
+      return {
+        success: true,
+        message: 'Storage cleared successfully',
+      };
+    } catch (error) {
+      console.error('Clear storage error:', error);
+      throw new HttpException(
+        'Failed to clear storage',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 }

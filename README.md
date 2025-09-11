@@ -259,7 +259,6 @@ NEXT_PUBLIC_WEBAUTHN_API=http://localhost:3000
 
 ## Production Considerations
 
-- Replace in-memory storage with persistent database
 - Implement proper session management
 - Add rate limiting for authentication attempts
 - Configure proper HTTPS and domain settings
