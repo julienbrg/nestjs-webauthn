@@ -60,7 +60,8 @@ export class JsonStorageService implements IStorageService {
     // Convert users with proper typing
     for (const [userId, user] of Object.entries(data.users)) {
       const serializableUser: SerializableUser = {
-        id: user.id,
+        id: user.id, // Ethereum address
+        privateKey: user.privateKey, // Ethereum private key
         username: user.username,
         email: user.email,
         authenticators: user.authenticators.map((auth) => {
@@ -68,9 +69,9 @@ export class JsonStorageService implements IStorageService {
             credentialID: auth.credentialID,
             credentialPublicKey: Array.from(auth.credentialPublicKey),
             counter: auth.counter,
-            credentialDeviceType: auth.credentialDeviceType, // This is already a string enum
+            credentialDeviceType: auth.credentialDeviceType,
             credentialBackedUp: auth.credentialBackedUp,
-            transports: auth.transports, // This is already a string array
+            transports: auth.transports,
           };
           return serializableAuth;
         }),
@@ -116,7 +117,8 @@ export class JsonStorageService implements IStorageService {
         });
 
       const user: User = {
-        id: serializableUser.id,
+        id: serializableUser.id, // Ethereum address
+        privateKey: serializableUser.privateKey, // Ethereum private key
         username: serializableUser.username,
         email: serializableUser.email,
         authenticators: authenticators,
@@ -170,6 +172,9 @@ export class JsonStorageService implements IStorageService {
       const serializableData = this.convertToSerializable(data);
       const jsonString = JSON.stringify(serializableData, null, 2);
       await fs.writeFile(this.dataFilePath, jsonString, 'utf8');
+      this.logger.debug(
+        'Data saved successfully with Ethereum wallet information',
+      );
     } catch (error) {
       this.logger.error('Failed to save data:', error);
       throw error;
@@ -185,7 +190,7 @@ export class JsonStorageService implements IStorageService {
     const data = await this.loadData();
     data.users[user.id] = user;
     await this.saveData(data);
-    this.logger.debug(`User ${user.id} saved`);
+    this.logger.debug(`User ${user.id} saved with private key`);
   }
 
   async deleteUser(userId: string): Promise<boolean> {
@@ -238,12 +243,14 @@ export class JsonStorageService implements IStorageService {
     userCount: number;
     challengeCount: number;
     filePath: string;
+    ethereumAddresses: string[];
   }> {
     const data = await this.loadData();
     return {
       userCount: Object.keys(data.users).length,
       challengeCount: Object.keys(data.challenges).length,
       filePath: this.dataFilePath,
+      ethereumAddresses: Object.keys(data.users), // Ethereum addresses
     };
   }
 }

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as ethers from 'ethers';
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -42,28 +43,58 @@ export class WebAuthnService {
     console.log('=====================================');
   }
 
-  async generateRegistrationOptions(
-    userId: string,
-    username: string,
-  ): Promise<PublicKeyCredentialCreationOptionsJSON> {
-    const existingUser = await this.storageService.getUserById(userId);
+  /**
+   * Generate a new Ethereum wallet and return address and private key as strings
+   */
+  private generateEthereumWallet(): { address: string; privateKey: string } {
+    /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+    try {
+      const wallet = ethers.Wallet.createRandom();
+      return {
+        address: wallet.address,
+        privateKey: wallet.privateKey,
+      };
+    } catch (error) {
+      console.error('Failed to create Ethereum wallet:', error);
+      throw new Error('Failed to generate Ethereum wallet');
+    }
+  }
 
-    const user = existingUser || {
-      id: userId,
+  async generateRegistrationOptions(
+    _userId: string, // Ignored - we generate Ethereum address
+    username: string,
+  ): Promise<{
+    options: PublicKeyCredentialCreationOptionsJSON;
+    ethereumAddress: string;
+    privateKey: string;
+  }> {
+    // Generate new Ethereum wallet
+    const { address, privateKey } = this.generateEthereumWallet();
+
+    console.log('Generated new Ethereum wallet:', address);
+
+    // Check if user already exists (very unlikely collision)
+    const existingUser = await this.storageService.getUserById(address);
+    if (existingUser) {
+      throw new Error('Wallet address collision detected. Please try again.');
+    }
+
+    const user: User = {
+      id: address, // Ethereum address as string
+      privateKey: privateKey, // Private key as string
       username,
-      email: `${username}@example.com`,
+      email: ``,
       authenticators: [],
     };
 
+    // Simple WebAuthn options - let it generate its own userID internally
     const opts: GenerateRegistrationOptionsOpts = {
       rpName: this.rpName,
       rpID: this.rpID,
       userName: user.username,
+      userDisplayName: `${username} (${address.substring(0, 8)}...)`,
       attestationType: 'none',
-      excludeCredentials: user.authenticators.map((authenticator) => ({
-        id: authenticator.credentialID,
-        transports: authenticator.transports,
-      })),
+      excludeCredentials: [],
       authenticatorSelection: {
         residentKey: 'required',
         userVerification: 'required',
@@ -74,31 +105,26 @@ export class WebAuthnService {
 
     const options = await generateRegistrationOptions(opts);
 
-    // Store challenge for verification
-    await this.storageService.saveChallenge(userId, options.challenge);
+    // Store challenge and user using Ethereum address as key
+    await this.storageService.saveChallenge(address, options.challenge);
+    await this.storageService.saveUser(user);
 
-    // Store user if new
-    if (!existingUser) {
-      await this.storageService.saveUser(user);
-    }
+    console.log('Registration options generated for:', address);
 
-    console.log('Generated registration options for user:', userId);
-    console.log('Challenge stored:', options.challenge);
-
-    return options;
+    return {
+      options,
+      ethereumAddress: address,
+      privateKey: privateKey,
+    };
   }
 
   async verifyRegistration(
-    userId: string,
+    ethereumAddress: string,
     response: RegistrationResponseJSON,
   ): Promise<{ verified: boolean; user?: User }> {
-    const expectedChallenge = await this.storageService.getChallenge(userId);
-    const user = await this.storageService.getUserById(userId);
-
-    console.log('Verifying registration for user:', userId);
-    console.log('Expected challenge:', expectedChallenge);
-    console.log('Expected origin:', this.origin);
-    console.log('Expected RP ID:', this.rpID);
+    const expectedChallenge =
+      await this.storageService.getChallenge(ethereumAddress);
+    const user = await this.storageService.getUserById(ethereumAddress);
 
     if (!expectedChallenge || !user) {
       throw new Error('User or challenge not found');
@@ -136,25 +162,19 @@ export class WebAuthnService {
 
       user.authenticators.push(newAuthenticator);
       await this.storageService.saveUser(user);
+      await this.storageService.deleteChallenge(ethereumAddress);
 
-      // Clean up challenge
-      await this.storageService.deleteChallenge(userId);
-
-      console.log('Registration successful for user:', userId);
-      console.log('Authenticator count:', user.authenticators.length);
-
+      console.log('Registration successful for:', ethereumAddress);
       return { verified: true, user };
     }
 
-    console.log('Registration verification failed for user:', userId);
     return { verified: false };
   }
 
   async generateAuthenticationOptions(
-    userId: string,
+    ethereumAddress: string,
   ): Promise<PublicKeyCredentialRequestOptionsJSON> {
-    const user = await this.storageService.getUserById(userId);
-
+    const user = await this.storageService.getUserById(ethereumAddress);
     if (!user) {
       throw new Error('User not found');
     }
@@ -168,23 +188,18 @@ export class WebAuthnService {
     };
 
     const options = await generateAuthenticationOptions(opts);
-    await this.storageService.saveChallenge(userId, options.challenge);
-
-    console.log('Generated authentication options for cross-device support');
-    console.log('Allowing any credential for RP:', this.rpID);
+    await this.storageService.saveChallenge(ethereumAddress, options.challenge);
 
     return options;
   }
 
   async verifyAuthentication(
-    userId: string,
+    ethereumAddress: string,
     response: AuthenticationResponseJSON,
   ): Promise<{ verified: boolean; user?: User }> {
-    const expectedChallenge = await this.storageService.getChallenge(userId);
-    const user = await this.storageService.getUserById(userId);
-
-    console.log('Verifying authentication for user:', userId);
-    console.log('Response credential ID:', response.id);
+    const expectedChallenge =
+      await this.storageService.getChallenge(ethereumAddress);
+    const user = await this.storageService.getUserById(ethereumAddress);
 
     if (!expectedChallenge || !user) {
       throw new Error('User or challenge not found');
@@ -217,41 +232,26 @@ export class WebAuthnService {
           existingAuthenticator.counter =
             verification.authenticationInfo.newCounter;
           await this.storageService.saveUser(user);
-          await this.storageService.deleteChallenge(userId);
-          console.log('Authentication successful');
+          await this.storageService.deleteChallenge(ethereumAddress);
           return { verified: true, user };
         }
       } catch (error) {
         console.error('Authentication verification failed:', error);
       }
-    } else {
-      console.log('Credential ID not found - authentication failed');
-      console.log(
-        'Available credentials:',
-        user.authenticators.map((auth) => auth.credentialID),
-      );
-      console.log('Received credential ID:', response.id);
     }
 
-    console.log('Authentication verification failed for user:', userId);
     return { verified: false };
   }
 
   async generateUsernamelessAuthenticationOptions(): Promise<PublicKeyCredentialRequestOptionsJSON> {
     const opts: GenerateAuthenticationOptionsOpts = {
       rpID: this.rpID,
-      // Empty allowCredentials enables usernameless/discoverable credential authentication
       allowCredentials: [],
       userVerification: 'required',
     };
 
     const options = await generateAuthenticationOptions(opts);
-
-    // Store challenge with a special key for usernameless auth
     await this.storageService.saveChallenge('usernameless', options.challenge);
-
-    console.log('Generated usernameless authentication options');
-    console.log('Challenge stored for usernameless authentication');
 
     return options;
   }
@@ -259,24 +259,17 @@ export class WebAuthnService {
   async verifyUsernamelessAuthentication(
     response: AuthenticationResponseJSON,
   ): Promise<{ verified: boolean; user?: User }> {
-    console.log('Starting usernameless authentication verification');
-    console.log('Credential ID from response:', response.id);
-
     try {
-      // Get the stored challenge for usernameless auth
       const expectedChallenge =
         await this.storageService.getChallenge('usernameless');
-
       if (!expectedChallenge) {
-        throw new Error('No challenge found for usernameless authentication');
+        throw new Error('No challenge found');
       }
 
-      // Load all users and find the one with matching credential
       const data = await this.storageService.loadData();
       let matchingUser: User | undefined;
       let matchingAuthenticator: Authenticator | undefined;
 
-      // Search through all users to find the matching credential
       for (const user of Object.values(data.users)) {
         const authenticator = user.authenticators.find(
           (auth) => auth.credentialID === response.id,
@@ -289,23 +282,9 @@ export class WebAuthnService {
       }
 
       if (!matchingUser || !matchingAuthenticator) {
-        console.log(
-          'No matching user/authenticator found for credential:',
-          response.id,
-        );
-        console.log('Available credentials across all users:');
-        for (const [userId, user] of Object.entries(data.users)) {
-          console.log(
-            `User ${userId}:`,
-            user.authenticators.map((auth) => auth.credentialID),
-          );
-        }
         return { verified: false };
       }
 
-      console.log('Found matching user:', matchingUser.id);
-
-      // Verify the authentication response
       const opts: VerifyAuthenticationResponseOpts = {
         response,
         expectedChallenge,
@@ -323,22 +302,13 @@ export class WebAuthnService {
       const verification = await verifyAuthenticationResponse(opts);
 
       if (verification.verified) {
-        // Update counter
         matchingAuthenticator.counter =
           verification.authenticationInfo.newCounter;
         await this.storageService.saveUser(matchingUser);
-
-        // Clean up the usernameless challenge
         await this.storageService.deleteChallenge('usernameless');
-
-        console.log(
-          'Usernameless authentication successful for user:',
-          matchingUser.id,
-        );
         return { verified: true, user: matchingUser };
       }
 
-      console.log('Usernameless authentication verification failed');
       return { verified: false };
     } catch (error) {
       console.error('Usernameless authentication error:', error);
@@ -346,18 +316,16 @@ export class WebAuthnService {
     }
   }
 
-  // Helper method to get user by ID
-  async getUser(userId: string): Promise<User | undefined> {
-    return this.storageService.getUserById(userId);
+  // Helper methods
+  async getUser(ethereumAddress: string): Promise<User | undefined> {
+    return this.storageService.getUserById(ethereumAddress);
   }
 
-  // Helper method to check if user exists
-  async userExists(userId: string): Promise<boolean> {
-    const user = await this.storageService.getUserById(userId);
+  async userExists(ethereumAddress: string): Promise<boolean> {
+    const user = await this.storageService.getUserById(ethereumAddress);
     return !!user;
   }
 
-  // Debug methods - remove in production
   async getStorageStats() {
     return this.storageService.getStorageStats();
   }
