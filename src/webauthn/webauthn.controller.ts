@@ -14,21 +14,20 @@ import type {
 } from '@simplewebauthn/server';
 
 export class RegisterBeginDto {
-  userId: string;
   username: string;
 }
 
 export class RegisterCompleteDto {
-  userId: string;
+  ethereumAddress: string; // Using Ethereum address as userId
   response: RegistrationResponseJSON;
 }
 
 export class AuthenticateBeginDto {
-  userId: string;
+  ethereumAddress: string; // Using Ethereum address as userId
 }
 
 export class AuthenticateCompleteDto {
-  userId: string;
+  ethereumAddress: string; // Using Ethereum address as userId
   response: AuthenticationResponseJSON;
 }
 
@@ -43,11 +42,12 @@ export interface ApiResponse<T = any> {
 }
 
 export interface UserResponse {
-  id: string;
+  id: string; // Ethereum address
   username: string;
   email: string;
   hasAuthenticators: boolean;
   authenticatorCount: number;
+  ethereumAddress: string; // Make it explicit
 }
 
 @Controller('webauthn')
@@ -55,27 +55,32 @@ export class WebAuthnController {
   constructor(private readonly webAuthnService: WebAuthnService) {}
 
   @Post('register/begin')
-  async beginRegistration(
-    @Body() body: RegisterBeginDto,
-  ): Promise<ApiResponse> {
+  async beginRegistration(@Body() body: RegisterBeginDto): Promise<
+    ApiResponse<{
+      options: any;
+      ethereumAddress: string;
+      privateKey: string;
+    }>
+  > {
     try {
-      const { userId, username } = body;
+      const { username } = body;
 
-      if (!userId || !username) {
-        throw new HttpException(
-          'userId and username are required',
-          HttpStatus.BAD_REQUEST,
-        );
+      if (!username) {
+        throw new HttpException('username is required', HttpStatus.BAD_REQUEST);
       }
 
-      const options = await this.webAuthnService.generateRegistrationOptions(
-        userId,
+      const result = await this.webAuthnService.generateRegistrationOptions(
+        '', // userId is ignored now
         username,
       );
 
       return {
         success: true,
-        data: { options },
+        data: {
+          options: result.options,
+          ethereumAddress: result.ethereumAddress,
+          privateKey: result.privateKey,
+        },
       };
     } catch (error) {
       console.error('Begin registration error:', error);
@@ -93,32 +98,33 @@ export class WebAuthnController {
     @Body() body: RegisterCompleteDto,
   ): Promise<ApiResponse<{ user: UserResponse }>> {
     try {
-      const { userId, response } = body;
+      const { ethereumAddress, response } = body;
 
-      if (!userId || !response) {
+      if (!ethereumAddress || !response) {
         throw new HttpException(
-          'userId and response are required',
+          'ethereumAddress and response are required',
           HttpStatus.BAD_REQUEST,
         );
       }
 
       const result = await this.webAuthnService.verifyRegistration(
-        userId,
+        ethereumAddress,
         response,
       );
 
       if (result.verified && result.user) {
         const userResponse: UserResponse = {
-          id: result.user.id,
+          id: result.user.id, // Ethereum address
           username: result.user.username,
           email: result.user.email,
           hasAuthenticators: (result.user.authenticators?.length || 0) > 0,
           authenticatorCount: result.user.authenticators?.length || 0,
+          ethereumAddress: result.user.id, // Make it explicit
         };
 
         return {
           success: true,
-          message: 'Registration successful',
+          message: 'Registration successful. Ethereum wallet created.',
           data: { user: userResponse },
         };
       } else {
@@ -146,19 +152,24 @@ export class WebAuthnController {
     @Body() body: AuthenticateBeginDto,
   ): Promise<ApiResponse> {
     try {
-      const { userId } = body;
+      const { ethereumAddress } = body;
 
-      if (!userId) {
-        throw new HttpException('userId is required', HttpStatus.BAD_REQUEST);
+      if (!ethereumAddress) {
+        throw new HttpException(
+          'ethereumAddress is required',
+          HttpStatus.BAD_REQUEST,
+        );
       }
 
       // Check if user exists
-      if (!(await this.webAuthnService.userExists(userId))) {
+      if (!(await this.webAuthnService.userExists(ethereumAddress))) {
         throw new HttpException('User not found', HttpStatus.NOT_FOUND);
       }
 
       const options =
-        await this.webAuthnService.generateAuthenticationOptions(userId);
+        await this.webAuthnService.generateAuthenticationOptions(
+          ethereumAddress,
+        );
 
       return {
         success: true,
@@ -183,27 +194,28 @@ export class WebAuthnController {
     @Body() body: AuthenticateCompleteDto,
   ): Promise<ApiResponse<{ user: UserResponse }>> {
     try {
-      const { userId, response } = body;
+      const { ethereumAddress, response } = body;
 
-      if (!userId || !response) {
+      if (!ethereumAddress || !response) {
         throw new HttpException(
-          'userId and response are required',
+          'ethereumAddress and response are required',
           HttpStatus.BAD_REQUEST,
         );
       }
 
       const result = await this.webAuthnService.verifyAuthentication(
-        userId,
+        ethereumAddress,
         response,
       );
 
       if (result.verified && result.user) {
         const userResponse: UserResponse = {
-          id: result.user.id,
+          id: result.user.id, // Ethereum address
           username: result.user.username,
           email: result.user.email,
           hasAuthenticators: (result.user.authenticators?.length || 0) > 0,
           authenticatorCount: result.user.authenticators?.length || 0,
+          ethereumAddress: result.user.id,
         };
 
         return {
@@ -233,25 +245,29 @@ export class WebAuthnController {
 
   @Get('user')
   async getUser(
-    @Query('userId') userId: string,
+    @Query('ethereumAddress') ethereumAddress: string,
   ): Promise<ApiResponse<{ user: UserResponse }>> {
     try {
-      if (!userId) {
-        throw new HttpException('userId is required', HttpStatus.BAD_REQUEST);
+      if (!ethereumAddress) {
+        throw new HttpException(
+          'ethereumAddress is required',
+          HttpStatus.BAD_REQUEST,
+        );
       }
 
-      const user = await this.webAuthnService.getUser(userId);
+      const user = await this.webAuthnService.getUser(ethereumAddress);
 
       if (!user) {
         throw new HttpException('User not found', HttpStatus.NOT_FOUND);
       }
 
       const userResponse: UserResponse = {
-        id: user.id,
+        id: user.id, // Ethereum address
         username: user.username,
         email: user.email,
         hasAuthenticators: (user.authenticators?.length || 0) > 0,
         authenticatorCount: user.authenticators?.length || 0,
+        ethereumAddress: user.id,
       };
 
       return {
@@ -276,6 +292,7 @@ export class WebAuthnController {
       status: 'ok',
       origin: process.env.WEBAUTHN_ORIGIN,
       rpId: process.env.WEBAUTHN_RP_ID,
+      ethereumIntegration: true,
     };
   }
 
@@ -352,11 +369,12 @@ export class WebAuthnController {
 
       if (result.verified && result.user) {
         const userResponse: UserResponse = {
-          id: result.user.id,
+          id: result.user.id, // Ethereum address
           username: result.user.username,
           email: result.user.email,
           hasAuthenticators: (result.user.authenticators?.length || 0) > 0,
           authenticatorCount: result.user.authenticators?.length || 0,
+          ethereumAddress: result.user.id,
         };
 
         return {
