@@ -4,6 +4,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { WebAuthnModule } from './webauthn/webauthn.module';
 import { Web3Module } from './web3/web3.module';
+import { StoreModule } from './store/store.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { Web3Module } from './web3/web3.module';
     }),
     WebAuthnModule,
     Web3Module,
+    StoreModule,
   ],
   controllers: [AppController],
   providers: [AppService],
