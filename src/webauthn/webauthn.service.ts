@@ -20,6 +20,7 @@ import type {
 } from '@simplewebauthn/server';
 import { User, Authenticator } from './interfaces/user.interface';
 import { JsonStorageService } from './services/json-storage.service';
+import { StoreService } from '../store/store.service';
 
 @Injectable()
 export class WebAuthnService {
@@ -30,6 +31,7 @@ export class WebAuthnService {
   constructor(
     private configService: ConfigService,
     private storageService: JsonStorageService,
+    private storeService: StoreService, // Add StoreService dependency
   ) {
     this.rpID = this.configService.get('WEBAUTHN_RP_ID') || 'localhost';
     this.rpName = this.configService.get('WEBAUTHN_RP_NAME') || 'WebAuthn Demo';
@@ -163,6 +165,15 @@ export class WebAuthnService {
       user.authenticators.push(newAuthenticator);
       await this.storageService.saveUser(user);
       await this.storageService.deleteChallenge(ethereumAddress);
+
+      // Create user directory for file storage
+      try {
+        await this.storeService.createUserDirectory(ethereumAddress);
+        console.log('User directory created for:', ethereumAddress);
+      } catch (error) {
+        console.error('Failed to create user directory:', error);
+        // Don't fail registration if directory creation fails
+      }
 
       console.log('Registration successful for:', ethereumAddress);
       return { verified: true, user };
