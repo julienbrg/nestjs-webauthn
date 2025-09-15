@@ -57,11 +57,10 @@ export class JsonStorageService implements IStorageService {
       challenges: { ...data.challenges },
     };
 
-    // Convert users with proper typing
+    // Convert users with proper typing (no privateKey field)
     for (const [userId, user] of Object.entries(data.users)) {
       const serializableUser: SerializableUser = {
         id: user.id, // Ethereum address
-        privateKey: user.privateKey, // Ethereum private key
         username: user.username,
         email: user.email,
         authenticators: user.authenticators.map((auth) => {
@@ -90,7 +89,7 @@ export class JsonStorageService implements IStorageService {
       challenges: { ...serializable.challenges },
     };
 
-    // Convert users back with proper typing
+    // Convert users back with proper typing (no privateKey field)
     for (const [userId, serializableUser] of Object.entries(
       serializable.users,
     )) {
@@ -118,7 +117,6 @@ export class JsonStorageService implements IStorageService {
 
       const user: User = {
         id: serializableUser.id, // Ethereum address
-        privateKey: serializableUser.privateKey, // Ethereum private key
         username: serializableUser.username,
         email: serializableUser.email,
         authenticators: authenticators,
@@ -172,9 +170,7 @@ export class JsonStorageService implements IStorageService {
       const serializableData = this.convertToSerializable(data);
       const jsonString = JSON.stringify(serializableData, null, 2);
       await fs.writeFile(this.dataFilePath, jsonString, 'utf8');
-      this.logger.debug(
-        'Data saved successfully with Ethereum wallet information',
-      );
+      this.logger.debug('Data saved successfully');
     } catch (error) {
       this.logger.error('Failed to save data:', error);
       throw error;
@@ -190,7 +186,7 @@ export class JsonStorageService implements IStorageService {
     const data = await this.loadData();
     data.users[user.id] = user;
     await this.saveData(data);
-    this.logger.debug(`User ${user.id} saved with private key`);
+    this.logger.debug(`User ${user.id} saved`);
   }
 
   async deleteUser(userId: string): Promise<boolean> {

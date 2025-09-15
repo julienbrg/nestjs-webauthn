@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import * as ethers from 'ethers';
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -96,8 +95,8 @@ export class WebAuthnService {
       if (foundConfig) {
         return foundConfig;
       }
-    } catch (origin) {
-      console.warn('Failed to parse origin URL:', origin);
+    } catch (error) {
+      console.warn('Failed to parse origin URL:', error);
     }
 
     console.warn(`No configuration found for origin: ${origin}, using default`);
@@ -111,48 +110,30 @@ export class WebAuthnService {
     return this.domainConfigs.some((config) => config.origin === origin);
   }
 
-  /**
-   * Generate a new Ethereum wallet and return address and private key as strings
-   */
-  private generateEthereumWallet(): { address: string; privateKey: string } {
-    try {
-      const wallet = ethers.Wallet.createRandom();
-      return {
-        address: wallet.address,
-        privateKey: wallet.privateKey,
-      };
-    } catch (error) {
-      console.error('Failed to create Ethereum wallet:', error);
-      throw new Error('Failed to generate Ethereum wallet');
-    }
-  }
-
   async generateRegistrationOptions(
-    _userId: string,
     username: string,
+    ethereumAddress: string,
     requestOrigin?: string,
   ): Promise<{
     options: PublicKeyCredentialCreationOptionsJSON;
-    ethereumAddress: string;
-    privateKey: string;
   }> {
     const domainConfig = this.getDomainConfig(requestOrigin);
 
-    // Generate new Ethereum wallet
-    const { address, privateKey } = this.generateEthereumWallet();
-
-    console.log('Generated new Ethereum wallet:', address);
+    console.log(
+      'Generating registration for Ethereum address:',
+      ethereumAddress,
+    );
     console.log('Using domain config:', domainConfig);
 
-    // Check if user already exists (very unlikely collision)
-    const existingUser = await this.storageService.getUserById(address);
+    // Check if user already exists
+    const existingUser = await this.storageService.getUserById(ethereumAddress);
     if (existingUser) {
-      throw new Error('Wallet address collision detected. Please try again.');
+      throw new Error('User with this Ethereum address already exists');
     }
 
+    // Create user with provided Ethereum address as ID
     const user: User = {
-      id: address,
-      privateKey: privateKey,
+      id: ethereumAddress, // Use client-provided Ethereum address
       username,
       email: ``,
       authenticators: [],
@@ -160,9 +141,9 @@ export class WebAuthnService {
 
     const opts: GenerateRegistrationOptionsOpts = {
       rpName: this.rpName,
-      rpID: domainConfig.rpId, // Use domain-specific RP ID
+      rpID: domainConfig.rpId,
       userName: user.username,
-      userDisplayName: `${username} (${address.substring(0, 8)}...)`,
+      userDisplayName: `${username} (${ethereumAddress.substring(0, 8)}...)`,
       attestationType: 'none',
       excludeCredentials: [],
       authenticatorSelection: {
@@ -176,18 +157,14 @@ export class WebAuthnService {
     const options = await generateRegistrationOptions(opts);
 
     // Store challenge and user using Ethereum address as key
-    await this.storageService.saveChallenge(address, options.challenge);
+    await this.storageService.saveChallenge(ethereumAddress, options.challenge);
     await this.storageService.saveUser(user);
 
-    console.log('Registration options generated for:', address);
+    console.log('Registration options generated for:', ethereumAddress);
     console.log('Request origin:', requestOrigin);
     console.log('RP ID used:', domainConfig.rpId);
 
-    return {
-      options,
-      ethereumAddress: address,
-      privateKey: privateKey,
-    };
+    return { options };
   }
 
   async verifyRegistration(
@@ -211,7 +188,7 @@ export class WebAuthnService {
         response,
         expectedChallenge,
         expectedOrigin: domainConfig.origin,
-        expectedRPID: domainConfig.rpId, // Use domain-specific RP ID
+        expectedRPID: domainConfig.rpId,
       };
 
       console.log('Verifying registration with:', {
@@ -274,7 +251,7 @@ export class WebAuthnService {
     }
 
     const opts: GenerateAuthenticationOptionsOpts = {
-      rpID: domainConfig.rpId, // Use domain-specific RP ID
+      rpID: domainConfig.rpId,
       allowCredentials: [],
       userVerification: 'required',
     };
@@ -315,7 +292,7 @@ export class WebAuthnService {
           response,
           expectedChallenge,
           expectedOrigin: domainConfig.origin,
-          expectedRPID: domainConfig.rpId, // Use domain-specific RP ID
+          expectedRPID: domainConfig.rpId,
           credential: {
             id: existingAuthenticator.credentialID,
             publicKey: existingAuthenticator.credentialPublicKey,
@@ -355,7 +332,7 @@ export class WebAuthnService {
     const domainConfig = this.getDomainConfig(requestOrigin);
 
     const opts: GenerateAuthenticationOptionsOpts = {
-      rpID: domainConfig.rpId, // Use domain-specific RP ID
+      rpID: domainConfig.rpId,
       allowCredentials: [],
       userVerification: 'required',
     };
@@ -406,7 +383,7 @@ export class WebAuthnService {
         response,
         expectedChallenge,
         expectedOrigin: domainConfig.origin,
-        expectedRPID: domainConfig.rpId, // Use domain-specific RP ID
+        expectedRPID: domainConfig.rpId,
         credential: {
           id: matchingAuthenticator.credentialID,
           publicKey: matchingAuthenticator.credentialPublicKey,
