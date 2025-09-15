@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Get,
   Query,
+  Headers,
 } from '@nestjs/common';
 import { WebAuthnService } from './webauthn.service';
 import type {
@@ -18,16 +19,16 @@ export class RegisterBeginDto {
 }
 
 export class RegisterCompleteDto {
-  ethereumAddress: string; // Using Ethereum address as userId
+  ethereumAddress: string;
   response: RegistrationResponseJSON;
 }
 
 export class AuthenticateBeginDto {
-  ethereumAddress: string; // Using Ethereum address as userId
+  ethereumAddress: string;
 }
 
 export class AuthenticateCompleteDto {
-  ethereumAddress: string; // Using Ethereum address as userId
+  ethereumAddress: string;
   response: AuthenticationResponseJSON;
 }
 
@@ -42,12 +43,12 @@ export interface ApiResponse<T = any> {
 }
 
 export interface UserResponse {
-  id: string; // Ethereum address
+  id: string;
   username: string;
   email: string;
   hasAuthenticators: boolean;
   authenticatorCount: number;
-  ethereumAddress: string; // Make it explicit
+  ethereumAddress: string;
 }
 
 @Controller('webauthn')
@@ -55,7 +56,10 @@ export class WebAuthnController {
   constructor(private readonly webAuthnService: WebAuthnService) {}
 
   @Post('register/begin')
-  async beginRegistration(@Body() body: RegisterBeginDto): Promise<
+  async beginRegistration(
+    @Body() body: RegisterBeginDto,
+    @Headers('origin') origin?: string,
+  ): Promise<
     ApiResponse<{
       options: any;
       ethereumAddress: string;
@@ -69,9 +73,12 @@ export class WebAuthnController {
         throw new HttpException('username is required', HttpStatus.BAD_REQUEST);
       }
 
+      console.log('Registration begin request from origin:', origin);
+
       const result = await this.webAuthnService.generateRegistrationOptions(
-        '', // userId is ignored now
+        '',
         username,
+        origin,
       );
 
       return {
@@ -96,6 +103,7 @@ export class WebAuthnController {
   @Post('register/complete')
   async completeRegistration(
     @Body() body: RegisterCompleteDto,
+    @Headers('origin') origin?: string,
   ): Promise<ApiResponse<{ user: UserResponse }>> {
     try {
       const { ethereumAddress, response } = body;
@@ -107,19 +115,22 @@ export class WebAuthnController {
         );
       }
 
+      console.log('Registration complete request from origin:', origin);
+
       const result = await this.webAuthnService.verifyRegistration(
         ethereumAddress,
         response,
+        origin,
       );
 
       if (result.verified && result.user) {
         const userResponse: UserResponse = {
-          id: result.user.id, // Ethereum address
+          id: result.user.id,
           username: result.user.username,
           email: result.user.email,
           hasAuthenticators: (result.user.authenticators?.length || 0) > 0,
           authenticatorCount: result.user.authenticators?.length || 0,
-          ethereumAddress: result.user.id, // Make it explicit
+          ethereumAddress: result.user.id,
         };
 
         return {
@@ -150,6 +161,7 @@ export class WebAuthnController {
   @Post('authenticate/begin')
   async beginAuthentication(
     @Body() body: AuthenticateBeginDto,
+    @Headers('origin') origin?: string,
   ): Promise<ApiResponse> {
     try {
       const { ethereumAddress } = body;
@@ -161,15 +173,17 @@ export class WebAuthnController {
         );
       }
 
+      console.log('Authentication begin request from origin:', origin);
+
       // Check if user exists
       if (!(await this.webAuthnService.userExists(ethereumAddress))) {
         throw new HttpException('User not found', HttpStatus.NOT_FOUND);
       }
 
-      const options =
-        await this.webAuthnService.generateAuthenticationOptions(
-          ethereumAddress,
-        );
+      const options = await this.webAuthnService.generateAuthenticationOptions(
+        ethereumAddress,
+        origin,
+      );
 
       return {
         success: true,
@@ -192,6 +206,7 @@ export class WebAuthnController {
   @Post('authenticate/complete')
   async completeAuthentication(
     @Body() body: AuthenticateCompleteDto,
+    @Headers('origin') origin?: string,
   ): Promise<ApiResponse<{ user: UserResponse }>> {
     try {
       const { ethereumAddress, response } = body;
@@ -203,14 +218,17 @@ export class WebAuthnController {
         );
       }
 
+      console.log('Authentication complete request from origin:', origin);
+
       const result = await this.webAuthnService.verifyAuthentication(
         ethereumAddress,
         response,
+        origin,
       );
 
       if (result.verified && result.user) {
         const userResponse: UserResponse = {
-          id: result.user.id, // Ethereum address
+          id: result.user.id,
           username: result.user.username,
           email: result.user.email,
           hasAuthenticators: (result.user.authenticators?.length || 0) > 0,
@@ -262,7 +280,7 @@ export class WebAuthnController {
       }
 
       const userResponse: UserResponse = {
-        id: user.id, // Ethereum address
+        id: user.id,
         username: user.username,
         email: user.email,
         hasAuthenticators: (user.authenticators?.length || 0) > 0,
@@ -288,12 +306,31 @@ export class WebAuthnController {
 
   @Get('health')
   getHealth() {
+    const allowedOrigins = this.webAuthnService.getAllowedOrigins();
     return {
       status: 'ok',
-      origin: process.env.WEBAUTHN_ORIGIN,
+      allowedOrigins,
       rpId: process.env.WEBAUTHN_RP_ID,
+      primaryOrigin: process.env.WEBAUTHN_ORIGIN,
       ethereumIntegration: true,
     };
+  }
+
+  @Get('origins')
+  getAllowedOrigins(): ApiResponse<{ origins: string[] }> {
+    try {
+      const origins = this.webAuthnService.getAllowedOrigins();
+      return {
+        success: true,
+        data: { origins },
+      };
+    } catch (error) {
+      console.error('Get allowed origins error:', error);
+      throw new HttpException(
+        'Failed to get allowed origins',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
   // Debug endpoint - remove in production
@@ -333,10 +370,19 @@ export class WebAuthnController {
   }
 
   @Post('authenticate/usernameless/begin')
-  async beginUsernamelessAuthentication(): Promise<ApiResponse> {
+  async beginUsernamelessAuthentication(
+    @Headers('origin') origin?: string,
+  ): Promise<ApiResponse> {
     try {
+      console.log(
+        'Usernameless authentication begin request from origin:',
+        origin,
+      );
+
       const options =
-        await this.webAuthnService.generateUsernamelessAuthenticationOptions();
+        await this.webAuthnService.generateUsernamelessAuthenticationOptions(
+          origin,
+        );
 
       return {
         success: true,
@@ -356,6 +402,7 @@ export class WebAuthnController {
   @Post('authenticate/usernameless/complete')
   async completeUsernamelessAuthentication(
     @Body() body: AuthenticateUsernamelessCompleteDto,
+    @Headers('origin') origin?: string,
   ): Promise<ApiResponse<{ user: UserResponse }>> {
     try {
       const { response } = body;
@@ -364,12 +411,20 @@ export class WebAuthnController {
         throw new HttpException('response is required', HttpStatus.BAD_REQUEST);
       }
 
+      console.log(
+        'Usernameless authentication complete request from origin:',
+        origin,
+      );
+
       const result =
-        await this.webAuthnService.verifyUsernamelessAuthentication(response);
+        await this.webAuthnService.verifyUsernamelessAuthentication(
+          response,
+          origin,
+        );
 
       if (result.verified && result.user) {
         const userResponse: UserResponse = {
-          id: result.user.id, // Ethereum address
+          id: result.user.id,
           username: result.user.username,
           email: result.user.email,
           hasAuthenticators: (result.user.authenticators?.length || 0) > 0,

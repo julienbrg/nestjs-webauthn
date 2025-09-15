@@ -22,34 +22,99 @@ import { User, Authenticator } from './interfaces/user.interface';
 import { JsonStorageService } from './services/json-storage.service';
 import { StoreService } from '../store/store.service';
 
+interface DomainConfig {
+  origin: string;
+  rpId: string;
+}
+
 @Injectable()
 export class WebAuthnService {
-  private readonly rpID: string;
   private readonly rpName: string;
-  private readonly origin: string;
+  private readonly domainConfigs: DomainConfig[];
+  private readonly defaultConfig: DomainConfig;
 
   constructor(
     private configService: ConfigService,
     private storageService: JsonStorageService,
-    private storeService: StoreService, // Add StoreService dependency
+    private storeService: StoreService,
   ) {
-    this.rpID = this.configService.get('WEBAUTHN_RP_ID') || 'localhost';
     this.rpName = this.configService.get('WEBAUTHN_RP_NAME') || 'WebAuthn Demo';
-    this.origin =
-      this.configService.get('WEBAUTHN_ORIGIN') || 'http://localhost:3000';
+
+    // Define domain-specific configurations
+    this.domainConfigs = [
+      {
+        origin: 'http://localhost:3001',
+        rpId: 'localhost',
+      },
+      {
+        origin: 'https://genji-app.netlify.app',
+        rpId: 'genji-app.netlify.app',
+      },
+      {
+        origin: 'https://d2u.w3hc.org',
+        rpId: 'd2u.w3hc.org',
+      },
+    ];
+
+    // Default configuration (fallback)
+    this.defaultConfig = {
+      origin:
+        this.configService.get('WEBAUTHN_ORIGIN') || 'http://localhost:3001',
+      rpId: this.configService.get('WEBAUTHN_RP_ID') || 'localhost',
+    };
 
     console.log('=== WebAuthn Service Configuration ===');
-    console.log('Origin:', this.origin);
-    console.log('RP ID:', this.rpID);
     console.log('RP Name:', this.rpName);
+    console.log('Domain Configs:', this.domainConfigs);
+    console.log('Default Config:', this.defaultConfig);
     console.log('=====================================');
+  }
+
+  /**
+   * Get domain configuration based on origin
+   */
+  private getDomainConfig(origin?: string): DomainConfig {
+    if (!origin) {
+      return this.defaultConfig;
+    }
+
+    const config = this.domainConfigs.find(
+      (config) => config.origin === origin,
+    );
+    if (config) {
+      return config;
+    }
+
+    // If no exact match found, try to find by hostname
+    try {
+      const originUrl = new URL(origin);
+      const foundConfig = this.domainConfigs.find((config) => {
+        const configUrl = new URL(config.origin);
+        return configUrl.hostname === originUrl.hostname;
+      });
+
+      if (foundConfig) {
+        return foundConfig;
+      }
+    } catch (origin) {
+      console.warn('Failed to parse origin URL:', origin);
+    }
+
+    console.warn(`No configuration found for origin: ${origin}, using default`);
+    return this.defaultConfig;
+  }
+
+  /**
+   * Validate if origin is allowed
+   */
+  private isValidOrigin(origin: string): boolean {
+    return this.domainConfigs.some((config) => config.origin === origin);
   }
 
   /**
    * Generate a new Ethereum wallet and return address and private key as strings
    */
   private generateEthereumWallet(): { address: string; privateKey: string } {
-    /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
     try {
       const wallet = ethers.Wallet.createRandom();
       return {
@@ -63,17 +128,21 @@ export class WebAuthnService {
   }
 
   async generateRegistrationOptions(
-    _userId: string, // Ignored - we generate Ethereum address
+    _userId: string,
     username: string,
+    requestOrigin?: string,
   ): Promise<{
     options: PublicKeyCredentialCreationOptionsJSON;
     ethereumAddress: string;
     privateKey: string;
   }> {
+    const domainConfig = this.getDomainConfig(requestOrigin);
+
     // Generate new Ethereum wallet
     const { address, privateKey } = this.generateEthereumWallet();
 
     console.log('Generated new Ethereum wallet:', address);
+    console.log('Using domain config:', domainConfig);
 
     // Check if user already exists (very unlikely collision)
     const existingUser = await this.storageService.getUserById(address);
@@ -82,17 +151,16 @@ export class WebAuthnService {
     }
 
     const user: User = {
-      id: address, // Ethereum address as string
-      privateKey: privateKey, // Private key as string
+      id: address,
+      privateKey: privateKey,
       username,
       email: ``,
       authenticators: [],
     };
 
-    // Simple WebAuthn options - let it generate its own userID internally
     const opts: GenerateRegistrationOptionsOpts = {
       rpName: this.rpName,
-      rpID: this.rpID,
+      rpID: domainConfig.rpId, // Use domain-specific RP ID
       userName: user.username,
       userDisplayName: `${username} (${address.substring(0, 8)}...)`,
       attestationType: 'none',
@@ -112,6 +180,8 @@ export class WebAuthnService {
     await this.storageService.saveUser(user);
 
     console.log('Registration options generated for:', address);
+    console.log('Request origin:', requestOrigin);
+    console.log('RP ID used:', domainConfig.rpId);
 
     return {
       options,
@@ -123,7 +193,10 @@ export class WebAuthnService {
   async verifyRegistration(
     ethereumAddress: string,
     response: RegistrationResponseJSON,
+    requestOrigin?: string,
   ): Promise<{ verified: boolean; user?: User }> {
+    const domainConfig = this.getDomainConfig(requestOrigin);
+
     const expectedChallenge =
       await this.storageService.getChallenge(ethereumAddress);
     const user = await this.storageService.getUserById(ethereumAddress);
@@ -137,13 +210,20 @@ export class WebAuthnService {
       const opts: VerifyRegistrationResponseOpts = {
         response,
         expectedChallenge,
-        expectedOrigin: this.origin,
-        expectedRPID: this.rpID,
+        expectedOrigin: domainConfig.origin,
+        expectedRPID: domainConfig.rpId, // Use domain-specific RP ID
       };
+
+      console.log('Verifying registration with:', {
+        expectedOrigin: domainConfig.origin,
+        expectedRPID: domainConfig.rpId,
+        requestOrigin,
+      });
 
       verification = await verifyRegistrationResponse(opts);
     } catch (error) {
       console.error('Registration verification failed:', error);
+      console.error('Domain config used:', domainConfig);
       return { verified: false };
     }
 
@@ -184,16 +264,17 @@ export class WebAuthnService {
 
   async generateAuthenticationOptions(
     ethereumAddress: string,
+    requestOrigin?: string,
   ): Promise<PublicKeyCredentialRequestOptionsJSON> {
+    const domainConfig = this.getDomainConfig(requestOrigin);
+
     const user = await this.storageService.getUserById(ethereumAddress);
     if (!user) {
       throw new Error('User not found');
     }
 
     const opts: GenerateAuthenticationOptionsOpts = {
-      rpID: this.rpID,
-      // For true cross-device support, leave allowCredentials empty
-      // This allows any passkey for this RP to authenticate
+      rpID: domainConfig.rpId, // Use domain-specific RP ID
       allowCredentials: [],
       userVerification: 'required',
     };
@@ -201,13 +282,20 @@ export class WebAuthnService {
     const options = await generateAuthenticationOptions(opts);
     await this.storageService.saveChallenge(ethereumAddress, options.challenge);
 
+    console.log('Authentication options generated for:', ethereumAddress);
+    console.log('Request origin:', requestOrigin);
+    console.log('RP ID used:', domainConfig.rpId);
+
     return options;
   }
 
   async verifyAuthentication(
     ethereumAddress: string,
     response: AuthenticationResponseJSON,
+    requestOrigin?: string,
   ): Promise<{ verified: boolean; user?: User }> {
+    const domainConfig = this.getDomainConfig(requestOrigin);
+
     const expectedChallenge =
       await this.storageService.getChallenge(ethereumAddress);
     const user = await this.storageService.getUserById(ethereumAddress);
@@ -222,13 +310,12 @@ export class WebAuthnService {
     );
 
     if (existingAuthenticator) {
-      // Same-device authentication
       try {
         const opts: VerifyAuthenticationResponseOpts = {
           response,
           expectedChallenge,
-          expectedOrigin: this.origin,
-          expectedRPID: this.rpID,
+          expectedOrigin: domainConfig.origin,
+          expectedRPID: domainConfig.rpId, // Use domain-specific RP ID
           credential: {
             id: existingAuthenticator.credentialID,
             publicKey: existingAuthenticator.credentialPublicKey,
@@ -237,6 +324,12 @@ export class WebAuthnService {
           },
         };
 
+        console.log('Verifying authentication with:', {
+          expectedOrigin: domainConfig.origin,
+          expectedRPID: domainConfig.rpId,
+          requestOrigin,
+        });
+
         const verification = await verifyAuthenticationResponse(opts);
 
         if (verification.verified) {
@@ -244,19 +337,25 @@ export class WebAuthnService {
             verification.authenticationInfo.newCounter;
           await this.storageService.saveUser(user);
           await this.storageService.deleteChallenge(ethereumAddress);
+          console.log('Authentication successful for:', ethereumAddress);
           return { verified: true, user };
         }
       } catch (error) {
         console.error('Authentication verification failed:', error);
+        console.error('Domain config used:', domainConfig);
       }
     }
 
     return { verified: false };
   }
 
-  async generateUsernamelessAuthenticationOptions(): Promise<PublicKeyCredentialRequestOptionsJSON> {
+  async generateUsernamelessAuthenticationOptions(
+    requestOrigin?: string,
+  ): Promise<PublicKeyCredentialRequestOptionsJSON> {
+    const domainConfig = this.getDomainConfig(requestOrigin);
+
     const opts: GenerateAuthenticationOptionsOpts = {
-      rpID: this.rpID,
+      rpID: domainConfig.rpId, // Use domain-specific RP ID
       allowCredentials: [],
       userVerification: 'required',
     };
@@ -264,12 +363,19 @@ export class WebAuthnService {
     const options = await generateAuthenticationOptions(opts);
     await this.storageService.saveChallenge('usernameless', options.challenge);
 
+    console.log('Usernameless authentication options generated');
+    console.log('Request origin:', requestOrigin);
+    console.log('RP ID used:', domainConfig.rpId);
+
     return options;
   }
 
   async verifyUsernamelessAuthentication(
     response: AuthenticationResponseJSON,
+    requestOrigin?: string,
   ): Promise<{ verified: boolean; user?: User }> {
+    const domainConfig = this.getDomainConfig(requestOrigin);
+
     try {
       const expectedChallenge =
         await this.storageService.getChallenge('usernameless');
@@ -299,8 +405,8 @@ export class WebAuthnService {
       const opts: VerifyAuthenticationResponseOpts = {
         response,
         expectedChallenge,
-        expectedOrigin: this.origin,
-        expectedRPID: this.rpID,
+        expectedOrigin: domainConfig.origin,
+        expectedRPID: domainConfig.rpId, // Use domain-specific RP ID
         credential: {
           id: matchingAuthenticator.credentialID,
           publicKey: matchingAuthenticator.credentialPublicKey,
@@ -310,6 +416,12 @@ export class WebAuthnService {
         requireUserVerification: true,
       };
 
+      console.log('Verifying usernameless authentication with:', {
+        expectedOrigin: domainConfig.origin,
+        expectedRPID: domainConfig.rpId,
+        requestOrigin,
+      });
+
       const verification = await verifyAuthenticationResponse(opts);
 
       if (verification.verified) {
@@ -317,6 +429,10 @@ export class WebAuthnService {
           verification.authenticationInfo.newCounter;
         await this.storageService.saveUser(matchingUser);
         await this.storageService.deleteChallenge('usernameless');
+        console.log(
+          'Usernameless authentication successful for:',
+          matchingUser.id,
+        );
         return { verified: true, user: matchingUser };
       }
 
@@ -344,5 +460,14 @@ export class WebAuthnService {
   async clearAllData(): Promise<void> {
     await this.storageService.clearAll();
     console.log('All user data and challenges cleared');
+  }
+
+  // Utility methods
+  getAllowedOrigins(): string[] {
+    return this.domainConfigs.map((config) => config.origin);
+  }
+
+  getDomainConfigs(): DomainConfig[] {
+    return [...this.domainConfigs];
   }
 }
