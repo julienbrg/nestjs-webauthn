@@ -17,10 +17,10 @@ export interface SerializableAuthenticator {
 
 export interface SerializableUser {
   id: string; // Ethereum address
-  privateKey: string; // Private key
   username: string;
   email: string;
   authenticators: SerializableAuthenticator[];
+  // REMOVED: privateKey field
 }
 
 export interface SerializableStorageData {

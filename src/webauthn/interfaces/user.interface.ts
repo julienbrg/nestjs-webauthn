@@ -6,7 +6,6 @@ import type {
 
 export interface User {
   id: string; // Ethereum address
-  privateKey: string; // Wallet private key
   username: string;
   email: string;
   authenticators: Authenticator[];
