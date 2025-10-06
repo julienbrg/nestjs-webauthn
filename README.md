@@ -238,18 +238,6 @@ export const getWebAuthnErrorMessage = (error: any): string => {
 };
 ```
 
-## Environment Variables
-
-```bash
-# Backend (.env)
-WEBAUTHN_RP_ID=localhost
-WEBAUTHN_RP_NAME=WebAuthn Demo
-WEBAUTHN_ORIGIN=http://localhost:3000
-
-# Frontend (.env.local)
-NEXT_PUBLIC_WEBAUTHN_API=http://localhost:3000
-```
-
 ## Browser Support
 
 - Chrome 67+ (all platforms)
