@@ -1,17 +1,15 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { WebAuthnService } from './webauthn/webauthn.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Define allowed origins
-  const allowedOrigins = [
-    'http://localhost:3001',
-    'https://genji-app.netlify.app',
-    'https://d2u.w3hc.org',
-  ];
+  // Get WebAuthn service to access allowed origins
+  const webAuthnService = app.get(WebAuthnService);
+  const allowedOrigins = webAuthnService.getAllowedOrigins();
 
-  // Enable CORS with multiple origins support
+  // Enable CORS with dynamic origins support
   app.enableCors({
     origin: (
       origin: string | undefined,
@@ -43,12 +41,5 @@ async function bootstrap() {
   });
 
   await app.listen(process.env.PORT || 3000);
-
-  console.log('=== Server Configuration ===');
-  console.log('Port:', process.env.PORT || 3000);
-  console.log('Allowed Origins:', allowedOrigins);
-  console.log('WebAuthn RP ID:', process.env.WEBAUTHN_RP_ID);
-  console.log('WebAuthn Origin:', process.env.WEBAUTHN_ORIGIN);
-  console.log('============================');
 }
 bootstrap();

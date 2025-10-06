@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   generateRegistrationOptions,
@@ -20,16 +20,16 @@ import type {
 import { User, Authenticator } from './interfaces/user.interface';
 import { JsonStorageService } from './services/json-storage.service';
 import { StoreService } from '../store/store.service';
+import { OriginStorageData } from './interfaces/origin.interface';
 
 interface DomainConfig {
   origin: string;
-  rpId: string;
 }
 
 @Injectable()
 export class WebAuthnService {
   private readonly rpName: string;
-  private readonly domainConfigs: DomainConfig[];
+  private domainConfigs: DomainConfig[];
   private readonly defaultConfig: DomainConfig;
 
   constructor(
@@ -37,51 +37,79 @@ export class WebAuthnService {
     private storageService: JsonStorageService,
     private storeService: StoreService,
   ) {
-    this.rpName = this.configService.get('WEBAUTHN_RP_NAME') || 'WebAuthn Demo';
+    // Start with empty array - all origins will come from origins.json
+    this.domainConfigs = [];
 
-    // Define domain-specific configurations
-    this.domainConfigs = [
-      {
-        origin: 'http://localhost:3001',
-        rpId: 'localhost',
-      },
-      {
-        origin: 'https://genji-app.netlify.app',
-        rpId: 'genji-app.netlify.app',
-      },
-      {
-        origin: 'https://d2u.w3hc.org',
-        rpId: 'd2u.w3hc.org',
-      },
-    ];
-
-    // Default configuration (fallback)
+    // Default configuration (fallback) - hardcode instead of using env
     this.defaultConfig = {
-      origin:
-        this.configService.get('WEBAUTHN_ORIGIN') || 'http://localhost:3001',
-      rpId: this.configService.get('WEBAUTHN_RP_ID') || 'localhost',
+      origin: 'http://localhost:3001',
     };
 
-    console.log('=== WebAuthn Service Configuration ===');
-    console.log('RP Name:', this.rpName);
-    console.log('Domain Configs:', this.domainConfigs);
-    console.log('Default Config:', this.defaultConfig);
-    console.log('=====================================');
+    // Load dynamic origins from storage
+    this.loadDynamicOrigins();
+  }
+
+  /**
+   * Extract rpId from origin URL
+   */
+  private extractRpId(origin: string): string {
+    try {
+      const url = new URL(origin);
+      return url.hostname;
+    } catch {
+      throw new Error('Invalid origin URL');
+    }
+  }
+
+  /**
+   * Load dynamic origins from storage on startup
+   */
+  private async loadDynamicOrigins(): Promise<void> {
+    try {
+      const originData = await this.storageService.loadOrigins();
+
+      if (originData.origins && originData.origins.length > 0) {
+        const dynamicConfigs = originData.origins.map((o) => ({
+          origin: o.origin,
+        }));
+
+        this.domainConfigs.push(...dynamicConfigs);
+
+        const originsList = dynamicConfigs.map((c) => c.origin).join(', ');
+        const logger = new Logger(WebAuthnService.name);
+        logger.log(
+          `Loaded ${dynamicConfigs.length} dynamic origins: ${originsList}`,
+        );
+      } else {
+        const logger = new Logger(WebAuthnService.name);
+        logger.log('No dynamic origins found');
+      }
+    } catch (error) {
+      const logger = new Logger(WebAuthnService.name);
+      logger.log(
+        'No existing origins file found (this is normal on first run)',
+      );
+      logger.log('error:', error);
+    }
   }
 
   /**
    * Get domain configuration based on origin
    */
-  private getDomainConfig(origin?: string): DomainConfig {
+  private getDomainConfig(origin?: string): { origin: string; rpId: string } {
     if (!origin) {
-      return this.defaultConfig;
+      return {
+        origin: this.defaultConfig.origin,
+        rpId: this.extractRpId(this.defaultConfig.origin),
+      };
     }
 
-    const config = this.domainConfigs.find(
-      (config) => config.origin === origin,
-    );
+    const config = this.domainConfigs.find((c) => c.origin === origin);
     if (config) {
-      return config;
+      return {
+        origin: config.origin,
+        rpId: this.extractRpId(config.origin),
+      };
     }
 
     // If no exact match found, try to find by hostname
@@ -93,14 +121,20 @@ export class WebAuthnService {
       });
 
       if (foundConfig) {
-        return foundConfig;
+        return {
+          origin: foundConfig.origin,
+          rpId: this.extractRpId(foundConfig.origin),
+        };
       }
     } catch (error) {
       console.warn('Failed to parse origin URL:', error);
     }
 
     console.warn(`No configuration found for origin: ${origin}, using default`);
-    return this.defaultConfig;
+    return {
+      origin: this.defaultConfig.origin,
+      rpId: this.extractRpId(this.defaultConfig.origin),
+    };
   }
 
   /**
@@ -133,7 +167,7 @@ export class WebAuthnService {
 
     // Create user with provided Ethereum address as ID
     const user: User = {
-      id: ethereumAddress, // Use client-provided Ethereum address
+      id: ethereumAddress,
       username,
       email: ``,
       authenticators: [],
@@ -156,7 +190,6 @@ export class WebAuthnService {
 
     const options = await generateRegistrationOptions(opts);
 
-    // Store challenge and user using Ethereum address as key
     await this.storageService.saveChallenge(ethereumAddress, options.challenge);
     await this.storageService.saveUser(user);
 
@@ -223,13 +256,11 @@ export class WebAuthnService {
       await this.storageService.saveUser(user);
       await this.storageService.deleteChallenge(ethereumAddress);
 
-      // Create user directory for file storage
       try {
         await this.storeService.createUserDirectory(ethereumAddress);
         console.log('User directory created for:', ethereumAddress);
       } catch (error) {
         console.error('Failed to create user directory:', error);
-        // Don't fail registration if directory creation fails
       }
 
       console.log('Registration successful for:', ethereumAddress);
@@ -281,7 +312,6 @@ export class WebAuthnService {
       throw new Error('User or challenge not found');
     }
 
-    // Try to find existing authenticator
     const existingAuthenticator = user.authenticators.find(
       (auth) => auth.credentialID === response.id,
     );
@@ -418,6 +448,36 @@ export class WebAuthnService {
       console.error('Usernameless authentication error:', error);
       return { verified: false };
     }
+  }
+
+  // Admin methods for origin management
+  async addOrigin(origin: string): Promise<void> {
+    this.extractRpId(origin); // Will throw if invalid
+
+    await this.storageService.addOrigin(origin);
+
+    this.domainConfigs.push({ origin });
+
+    console.log(
+      `Origin ${origin} added with rpId: ${this.extractRpId(origin)}`,
+    );
+  }
+
+  async removeOrigin(origin: string): Promise<boolean> {
+    const removed = await this.storageService.removeOrigin(origin);
+
+    if (removed) {
+      this.domainConfigs = this.domainConfigs.filter(
+        (c) => c.origin !== origin,
+      );
+      console.log(`Origin ${origin} removed from memory`);
+    }
+
+    return removed;
+  }
+
+  async listOrigins(): Promise<OriginStorageData> {
+    return this.storageService.getAllOrigins();
   }
 
   // Helper methods
