@@ -13,6 +13,8 @@ import type {
   RegistrationResponseJSON,
   AuthenticationResponseJSON,
 } from '@simplewebauthn/server';
+import { ConfigService } from '@nestjs/config';
+import { OriginStorageData } from './interfaces/origin.interface';
 
 export class RegisterBeginDto {
   username: string;
@@ -37,6 +39,16 @@ export class AuthenticateUsernamelessCompleteDto {
   response: AuthenticationResponseJSON;
 }
 
+export class AddOriginDto {
+  origin: string;
+  masterKey: string;
+}
+
+export class RemoveOriginDto {
+  origin: string;
+  masterKey: string;
+}
+
 export interface ApiResponse<T = any> {
   success: boolean;
   message?: string;
@@ -54,7 +66,10 @@ export interface UserResponse {
 
 @Controller('webauthn')
 export class WebAuthnController {
-  constructor(private readonly webAuthnService: WebAuthnService) {}
+  constructor(
+    private readonly webAuthnService: WebAuthnService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @Post('register/begin')
   async beginRegistration(
@@ -466,6 +481,139 @@ export class WebAuthnController {
         error instanceof Error
           ? error.message
           : 'Usernameless authentication verification failed',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Post('admin/origins/add')
+  async addOrigin(@Body() body: AddOriginDto): Promise<ApiResponse> {
+    try {
+      const { origin, masterKey } = body;
+
+      // Validate master key
+      const expectedMasterKey = this.configService.get<string>('MASTER_KEY');
+      if (!expectedMasterKey) {
+        throw new HttpException(
+          'Master key not configured',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+
+      if (masterKey !== expectedMasterKey) {
+        throw new HttpException('Invalid master key', HttpStatus.UNAUTHORIZED);
+      }
+
+      if (!origin) {
+        throw new HttpException('origin is required', HttpStatus.BAD_REQUEST);
+      }
+
+      // Validate origin format
+      let hostname: string;
+      try {
+        const url = new URL(origin);
+        hostname = url.hostname;
+      } catch {
+        throw new HttpException(
+          'Invalid origin URL format',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
+      await this.webAuthnService.addOrigin(origin);
+
+      return {
+        success: true,
+        message: `Origin ${origin} added (rpId: ${hostname})`,
+      };
+    } catch (error) {
+      console.error('Add origin error:', error);
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        error instanceof Error ? error.message : 'Failed to add origin',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Post('admin/origins/remove')
+  async removeOrigin(@Body() body: RemoveOriginDto): Promise<ApiResponse> {
+    try {
+      const { origin, masterKey } = body;
+
+      // Validate master key
+      const expectedMasterKey = this.configService.get<string>('MASTER_KEY');
+      if (!expectedMasterKey) {
+        throw new HttpException(
+          'Master key not configured',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+
+      if (masterKey !== expectedMasterKey) {
+        throw new HttpException('Invalid master key', HttpStatus.UNAUTHORIZED);
+      }
+
+      if (!origin) {
+        throw new HttpException('origin is required', HttpStatus.BAD_REQUEST);
+      }
+
+      const removed = await this.webAuthnService.removeOrigin(origin);
+
+      if (removed) {
+        return {
+          success: true,
+          message: `Origin ${origin} removed successfully`,
+        };
+      } else {
+        throw new HttpException('Origin not found', HttpStatus.NOT_FOUND);
+      }
+    } catch (error) {
+      console.error('Remove origin error:', error);
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        error instanceof Error ? error.message : 'Failed to remove origin',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Get('admin/origins/list')
+  async listOrigins(
+    @Query('masterKey') masterKey: string,
+  ): Promise<ApiResponse> {
+    try {
+      // Validate master key
+      const expectedMasterKey = this.configService.get<string>('MASTER_KEY');
+      if (!expectedMasterKey) {
+        throw new HttpException(
+          'Master key not configured',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        );
+      }
+
+      if (masterKey !== expectedMasterKey) {
+        throw new HttpException('Invalid master key', HttpStatus.UNAUTHORIZED);
+      }
+
+      const origins: OriginStorageData =
+        await this.webAuthnService.listOrigins();
+
+      return {
+        success: true,
+        data: origins,
+      };
+    } catch (error) {
+      console.error('List origins error:', error);
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new HttpException(
+        error instanceof Error ? error.message : 'Failed to list origins',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

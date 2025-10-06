@@ -14,16 +14,19 @@ import {
   SerializableUser,
   SerializableAuthenticator,
 } from '../interfaces/storage.interface';
+import { OriginStorageData } from '../interfaces/origin.interface';
 
 @Injectable()
 export class JsonStorageService implements IStorageService {
   private readonly logger = new Logger(JsonStorageService.name);
   private readonly dataFilePath: string;
+  private readonly originsFilePath: string;
   private readonly dataDir: string;
 
   constructor(private configService: ConfigService) {
     this.dataDir = this.configService.get('WEBAUTHN_DATA_DIR') || './data';
     this.dataFilePath = path.join(this.dataDir, 'webauthn.json');
+    this.originsFilePath = path.join(this.dataDir, 'origins.json');
     this.initializeStorage();
   }
 
@@ -42,6 +45,19 @@ export class JsonStorageService implements IStorageService {
         };
         await this.saveData(initialData);
         this.logger.log(`Created initial storage file at ${this.dataFilePath}`);
+      }
+
+      // Initialize origins file
+      try {
+        await fs.access(this.originsFilePath);
+      } catch {
+        const initialOrigins: OriginStorageData = {
+          origins: [],
+        };
+        await this.saveOrigins(initialOrigins);
+        this.logger.log(
+          `Created initial origins file at ${this.originsFilePath}`,
+        );
       }
 
       this.logger.log(`Storage initialized at ${this.dataFilePath}`);
@@ -232,6 +248,87 @@ export class JsonStorageService implements IStorageService {
     };
     await this.saveData(emptyData);
     this.logger.log('All data cleared');
+  }
+
+  // Origin management methods
+  async loadOrigins(): Promise<OriginStorageData> {
+    try {
+      const fileContent = await fs.readFile(this.originsFilePath, 'utf8');
+      const parsed: unknown = JSON.parse(fileContent);
+
+      // Type guard to validate structure
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        'origins' in parsed &&
+        Array.isArray(parsed.origins)
+      ) {
+        const validatedData = parsed as {
+          origins: Array<{ origin: string; addedAt: string }>;
+        };
+
+        return {
+          origins: validatedData.origins.map((o) => ({
+            origin: o.origin,
+            addedAt: new Date(o.addedAt),
+          })),
+        };
+      }
+
+      this.logger.warn('Invalid origins data structure, returning empty');
+      return { origins: [] };
+    } catch (error) {
+      this.logger.error('Failed to load origins:', error);
+      return { origins: [] };
+    }
+  }
+
+  async saveOrigins(data: OriginStorageData): Promise<void> {
+    try {
+      const jsonString = JSON.stringify(data, null, 2);
+      await fs.writeFile(this.originsFilePath, jsonString, 'utf8');
+      this.logger.debug('Origins saved successfully');
+    } catch (error) {
+      this.logger.error('Failed to save origins:', error);
+      throw error;
+    }
+  }
+
+  async addOrigin(origin: string): Promise<void> {
+    const data = await this.loadOrigins();
+
+    // Check if origin already exists
+    const exists = data.origins.some((o) => o.origin === origin);
+    if (exists) {
+      throw new Error('Origin already exists');
+    }
+
+    data.origins.push({
+      origin,
+      addedAt: new Date(),
+    });
+
+    await this.saveOrigins(data);
+    this.logger.log(`Origin added: ${origin}`);
+  }
+
+  async removeOrigin(origin: string): Promise<boolean> {
+    const data = await this.loadOrigins();
+    const initialLength = data.origins.length;
+
+    data.origins = data.origins.filter((o) => o.origin !== origin);
+
+    if (data.origins.length < initialLength) {
+      await this.saveOrigins(data);
+      this.logger.log(`Origin removed: ${origin}`);
+      return true;
+    }
+
+    return false;
+  }
+
+  async getAllOrigins(): Promise<OriginStorageData> {
+    return this.loadOrigins();
   }
 
   // Utility method for debugging
